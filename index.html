@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DV Autonomy - Assistente de Visão</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          brand: { black: '#030712', dark: '#0A1128', card: '#0F172A', blue: '#0066FF', electric: '#0099FF', sky: '#38BDF8' }
+        }
+      }
+    }
+  }
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+
+<style>
+  * { box-sizing: border-box; font-family: 'Atkinson Hyperlegible', sans-serif; }
+  body { background-color: #030712; color: #FFFFFF; user-select: none; }
+  *:focus-visible { outline: 3px solid #0099FF !important; outline-offset: 3px !important; }
+</style>
+</head>
+<body class="min-h-screen flex flex-col justify-between p-4 bg-brand-black text-white">
+
+  <!-- Áudio de Boas-Vindas -->
+  <audio id="welcome-audio" src="boas-vindas.mp3" preload="auto"></audio>
+
+  <!-- Cabeçalho -->
+  <header class="w-full max-w-xl mx-auto border-b border-brand-blue/40 pb-3 mb-3 text-center">
+    <h1 class="text-2xl font-black text-brand-electric uppercase tracking-wider">DV AUTONOMY</h1>
+    <p class="text-xs font-bold text-gray-300">Assistente de Visão e Autonomia por Voz</p>
+  </header>
+
+  <main class="w-full max-w-xl mx-auto flex-1 flex flex-col items-center gap-3">
+
+    <!-- Configuração de Chave API (Fica oculta automaticamente após ser salva) -->
+    <div id="key-container" class="w-full bg-brand-card border-2 border-brand-electric rounded-xl p-4 text-center">
+      <label for="api-key-input" class="block text-sm font-bold text-brand-sky mb-2">
+        Insira sua Chave API do Gemini (Salva no navegador):
+      </label>
+      <div class="flex gap-2">
+        <input type="password" id="api-key-input" placeholder="Cole sua chave AIzaSy... ou AQ..." 
+               class="flex-1 p-2.5 rounded-lg bg-brand-dark border border-brand-blue text-white text-sm outline-none">
+        <button onclick="salvarChaveAPI()" class="px-4 py-2.5 bg-brand-electric text-black font-bold rounded-lg text-sm hover:bg-brand-sky transition">
+          Salvar
+        </button>
+      </div>
+    </div>
+
+    <!-- Banner Principal para Toque -->
+    <div id="touch-banner" class="w-full bg-brand-dark border-2 border-brand-electric rounded-xl p-3.5 text-center cursor-pointer active:scale-95 transition shadow-[0_0_15px_rgba(0,153,255,0.3)]">
+      <span class="text-base font-extrabold text-brand-sky">
+        Toque na tela ou diga "Tirar Foto"
+      </span>
+    </div>
+
+    <!-- Caixa de Status / Resposta -->
+    <section class="w-full bg-brand-card border border-brand-blue rounded-xl p-4 text-center">
+      <p id="status-text" class="text-lg font-bold text-white">Aguardando configuração...</p>
+    </section>
+
+    <!-- Visualização da Câmera ao Vivo -->
+    <div class="w-full bg-brand-dark border border-brand-blue rounded-xl p-2 flex flex-col items-center">
+      <video id="webcam" autoplay playsinline muted class="w-full max-h-[220px] object-cover rounded-lg border border-brand-blue/40"></video>
+      <canvas id="canvas-snapshot" class="hidden"></canvas>
+    </div>
+
+    <!-- Botões Auxiliares -->
+    <div class="w-full grid grid-cols-2 gap-2">
+      <button onclick="alternarCamera()" class="py-3 bg-brand-dark border border-brand-blue text-brand-sky font-bold rounded-xl text-xs active:scale-95 transition">
+        Trocar Câmera
+      </button>
+      <button onclick="limparChave()" class="py-3 bg-brand-dark border border-red-500/50 text-red-400 font-bold rounded-xl text-xs active:scale-95 transition">
+        Alterar Chave API
+      </button>
+    </div>
+
+  </main>
+
+  <script>
+    const statusText = document.getElementById('status-text');
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('canvas-snapshot');
+    const keyContainer = document.getElementById('key-container');
+    const apiKeyInput = document.getElementById('api-key-input');
+    const welcomeAudio = document.getElementById('welcome-audio');
+
+    let currentFacingMode = "environment";
+    let currentStream = null;
+    let analisando = false;
+    let recognition = null;
+
+    // 1. Gerenciamento da Chave no Navegador
+    function obterChaveAPI() {
+      return localStorage.getItem('DV_GEMINI_API_KEY') || '';
+    }
+
+    function salvarChaveAPI() {
+      const chave = apiKeyInput.value.trim();
+      if (!chave) {
+        alert("Por favor, cole uma chave válida.");
+        return;
+      }
+      localStorage.setItem('DV_GEMINI_API_KEY', chave);
+      verificarChave();
+      falar("Chave de API salva com sucesso.");
+    }
+
+    function limparChave() {
+      localStorage.removeItem('DV_GEMINI_API_KEY');
+      verificarChave();
+      falar("Chave removida. Insira uma nova chave para continuar.");
+    }
+
+    function verificarChave() {
+      const chave = obterChaveAPI();
+      if (chave) {
+        keyContainer.classList.add('hidden');
+        iniciarCamera();
+        iniciarReconhecimentoVoz();
+      } else {
+        keyContainer.classList.remove('hidden');
+        statusText.innerText = "Por favor, insira sua Chave API do Gemini acima.";
+      }
+    }
+
+    // 2. Acesso à Câmera
+    async function iniciarCamera() {
+      if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: currentFacingMode } }, audio: false
+        });
+        video.srcObject = currentStream;
+        statusText.innerText = "Câmera ativa. Toque na tela ou fale 'Tirar foto'.";
+      } catch (e) {
+        statusText.innerText = "Erro ao acessar a câmera. Verifique as permissões.";
+      }
+    }
+
+    async function alternarCamera() {
+      currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+      await iniciarCamera();
+      falar("Câmera alterada.");
+    }
+
+    // 3. Síntese de Voz (Leitura dos Resultados)
+    function falar(texto) {
+      statusText.innerText = texto;
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const speech = new SpeechSynthesisUtterance(texto);
+        speech.lang = 'pt-BR';
+        window.speechSynthesis.speak(speech);
+      }
+    }
+
+    // 4. Reconhecimento Contínuo de Voz
+    function iniciarReconhecimentoVoz() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) return;
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.lang = 'pt-BR';
+
+      recognition.onresult = (event) => {
+        const lastIndex = event.results.length - 1;
+        const comando = event.results[lastIndex][0].transcript.trim().toLowerCase();
+
+        if (comando.includes('tirar foto') || comando.includes('foto') || comando.includes('analisar')) {
+          tirarFotoEAnalisar();
+        } else if (comando.includes('virar') || comando.includes('trocar')) {
+          alternarCamera();
+        }
+      };
+
+      recognition.onerror = () => setTimeout(() => { try { recognition.start(); } catch(e){} }, 1000);
+      try { recognition.start(); } catch(e){}
+    }
+
+    // 5. Chamada de Análise de Imagem ao Gemini
+    async function tirarFotoEAnalisar() {
+      const apiKey = obterChaveAPI();
+      if (!apiKey) {
+        falar("Por favor, configure sua chave API primeiro.");
+        return;
+      }
+
+      if (analisando || video.readyState < 2) return;
+      analisando = true;
+      falar("Foto tirada. Analisando imagem...");
+
+      const ctx = canvas.getContext('2d');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const base64Clean = canvas.toDataURL('image/jpeg', 0.85).replace(/^data:image\/\w+;base64,/, '');
+
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: "Identifique e descreva de forma simples, curta e direta em português o objeto principal nesta foto para acessibilidade visual." },
+                { inline_data: { mime_type: "image/jpeg", data: base64Clean } }
+              ]
+            }]
+          })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+          const respostaIA = data.candidates[0].content.parts[0].text.trim();
+          falar("Objeto identificado: " + respostaIA);
+        } else {
+          const erroMsg = data?.error?.message || "Falha ao processar a imagem.";
+          falar("Não foi possível analisar. " + erroMsg);
+        }
+
+      } catch (err) {
+        falar("Erro de conexão ao consultar a inteligência artificial.");
+      } finally {
+        analisando = false;
+      }
+    }
+
+    // Interação na Tela
+    document.getElementById('touch-banner').addEventListener('click', tirarFotoEAnalisar);
+
+    window.addEventListener('load', () => {
+      verificarChave();
+      if (welcomeAudio) {
+        welcomeAudio.play().catch(() => {});
+      }
+    });
+  </script>
+</body>
+</html>
